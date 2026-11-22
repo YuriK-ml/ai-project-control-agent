@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, timezone
 
 from src.agent.context import build_context
-from src.canonical.model import ScheduleItem
+from src.canonical.model import DependencyType, ProjectSchedule, ScheduleDependency, ScheduleItem
 from src.workflows.model import ControlFinding
 
 
@@ -48,25 +48,25 @@ class AgentContextTest(unittest.TestCase):
             message="Срок истёк.",
         )
         self.raw = build_context(
-            [self.child, self.root, self.orphan], [self.finding], date(2026, 11, 14)
+            [ProjectSchedule("v1", "Schedule", [self.child, self.root, self.orphan], [])],
+            {"v1": [self.finding]}, date(2026, 11, 14)
         )
-        self.context = json.loads(self.raw)
+        self.context = json.loads(self.raw)["schedules"][0]
 
     def test_schedule_contains_all_items_with_parent_codes(self):
         schedule = self.context["schedule"]
         self.assertEqual([item["code"] for item in schedule], ["101", "100", "102"])
         self.assertEqual([item["parent_code"] for item in schedule], ["100", None, None])
 
-    def test_context_excludes_technical_ids(self):
-        for item in self.context["schedule"]:
-            self.assertNotIn("id", item)
-            self.assertNotIn("parent_id", item)
-        self.assertNotIn("item_id", self.context["findings"][0])
-        self.assertNotIn(self.root.id, self.raw)
-        self.assertNotIn(self.child.id, self.raw)
+    def test_context_preserves_identifiers(self):
+        child = self.context["schedule"][0]
+        self.assertEqual(child["id"], self.child.id)
+        self.assertEqual(child["parent_id"], self.root.id)
+        self.assertEqual(self.context["findings"][0]["item_id"], self.root.id)
 
     def test_findings_are_serialized(self):
         self.assertEqual(self.context["findings"], [{
+            "item_id": self.root.id,
             "rule_id": "OVERDUE_INCOMPLETE",
             "code": "100",
             "name": "Фаза",
@@ -77,8 +77,28 @@ class AgentContextTest(unittest.TestCase):
             "message": "Срок истёк.",
         }])
 
+    def test_dependencies_include_codes_type_lag_version_and_direction(self):
+        dependencies = [
+            ScheduleDependency(self.root.id, self.child.id, DependencyType.START_TO_START,
+                               -5, "v1", True),
+            ScheduleDependency(self.child.id, self.orphan.id, DependencyType.FINISH_TO_FINISH,
+                               0, "v1", False),
+        ]
+        context = json.loads(build_context(
+            [ProjectSchedule("v1", "Schedule", [self.child, self.root, self.orphan], dependencies)],
+            {"v1": [self.finding]}, date(2026, 11, 14),
+        ))
+        context = context["schedules"][0]
+        self.assertEqual(context["dependencies"], [
+            {"first_item_id": self.root.id, "second_item_id": self.child.id, "first_code": "100", "second_code": "101", "type": "ss", "lag": -5,
+             "version_id": "v1", "direction_confirmed": True},
+            {"first_item_id": self.child.id, "second_item_id": self.orphan.id, "first_code": "101", "second_code": "102", "type": "ff", "lag": 0,
+             "version_id": "v1", "direction_confirmed": False},
+        ])
+        self.assertEqual(context["findings"], self.context["findings"])
+
     def test_dates_are_iso_and_missing_dates_are_null(self):
-        self.assertEqual(self.context["as_of_date"], "2026-11-14")
+        self.assertEqual(json.loads(self.raw)["as_of_date"], "2026-11-14")
         child, root, _ = self.context["schedule"]
         self.assertEqual(child["start"], "2026-11-10T09:00:00+00:00")
         self.assertEqual(root["finish"], "2026-11-12T18:00:00+00:00")

@@ -3,3 +3,6 @@ __pycache__/
 .venv/
 /.env
 /data/fixtures/planr/
+/S.7z
+/data/documents/
+/data/chroma_db/
